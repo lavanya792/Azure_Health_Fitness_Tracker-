@@ -2,33 +2,40 @@
 import os
 import json
 import requests
-from typing import List, Dict
+from typing import List, Dict, Tuple, Optional
 from io import BytesIO
 from PIL import Image
 import pandas as pd
 from fuzzywuzzy import process
 
-def safe_load_json(path):
+# -------------------------
+# JSON helpers
+# -------------------------
+def safe_load_json(path: str) -> dict:
     if not os.path.exists(path):
-        with open(path, "w") as f:
-            json.dump({}, f)
         return {}
-    with open(path, "r") as f:
-        txt = f.read().strip()
-        if not txt:
-            return {}
-        try:
+    try:
+        with open(path, "r") as f:
+            txt = f.read().strip()
+            if not txt:
+                return {}
             return json.loads(txt)
-        except json.JSONDecodeError:
-            return {}
+    except Exception:
+        return {}
 
-def safe_save_json(path, data):
+def safe_save_json(path: str, data: dict):
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
+# -------------------------
 # Azure Language (Key Phrases)
+# -------------------------
 def azure_keyphrases(text: str, endpoint: str, key: str) -> List[str]:
-    if not text:
+    """
+    Return list of key phrases extracted by Azure Text Analytics.
+    If API fails, returns empty list.
+    """
+    if not text or not endpoint or not key:
         return []
     url = endpoint.rstrip("/") + "/text/analytics/v3.0/keyPhrases"
     headers = {"Ocp-Apim-Subscription-Key": key, "Content-Type": "application/json"}
@@ -41,50 +48,90 @@ def azure_keyphrases(text: str, endpoint: str, key: str) -> List[str]:
     except Exception:
         return []
 
+# -------------------------
 # Azure Computer Vision analyze
+# -------------------------
 def azure_vision_analyze_image(image_bytes: bytes, endpoint: str, key: str) -> Dict:
+    """
+    Send binary image bytes to Azure Computer Vision analyze endpoint.
+    Returns JSON response (tags, description, objects) or {'error':...}.
+    """
+    if not image_bytes or not endpoint or not key:
+        return {"error": "Missing image bytes or Azure credentials."}
     url = endpoint.rstrip("/") + "/vision/v3.2/analyze"
     params = {"visualFeatures": "Tags,Description,Objects", "language": "en"}
     headers = {"Ocp-Apim-Subscription-Key": key, "Content-Type": "application/octet-stream"}
     try:
-        r = requests.post(url, headers=headers, params=params, data=image_bytes, timeout=20)
+        r = requests.post(url, headers=headers, params=params, data=image_bytes, timeout=30)
         r.raise_for_status()
         return r.json()
     except Exception as e:
         return {"error": str(e)}
 
-# Map vision tags/descriptions to dataset dish names using fuzzy matching
-def find_closest_foods_from_tags(tags: List[str], df_food: pd.DataFrame, top_n=5, score_cutoff=60):
-    if df_food is None or df_food.empty:
+# -------------------------
+# Fuzzy matching helpers
+# -------------------------
+def find_closest_foods_from_tags(tags: List[str], df_food: pd.DataFrame, top_n: int = 5, score_cutoff: int = 60) -> List[Tuple[str,int]]:
+    """
+    Given list of tags, fuzzy-match them to 'Dish Name' column in df_food.
+    Returns list of (dish_name, score), sorted by score desc.
+    """
+    if df_food is None or df_food.empty or not tags:
         return []
     dish_list = df_food['Dish Name'].astype(str).tolist()
     candidates = {}
     for t in tags:
+        if not t:
+            continue
         match = process.extractOne(t, dish_list, score_cutoff=score_cutoff)
         if match:
             name, score = match[0], match[1]
-            if name in candidates:
-                candidates[name] = max(candidates[name], score)
-            else:
-                candidates[name] = score
+            candidates[name] = max(candidates.get(name, 0), score)
     sorted_matches = sorted(candidates.items(), key=lambda x: -x[1])[:top_n]
     return sorted_matches
 
-# Nutrition calculation (dataset expected to have per-100g values)
-def calculate_nutrition_for_servings(df_food: pd.DataFrame, dish_name: str, servings: float):
-    dish_row = df_food[df_food['Dish Name'].str.lower() == dish_name.lower()]
-    if dish_row.empty:
-        # try fuzzy match
+# -------------------------
+# Nutrition calculation
+# -------------------------
+def calculate_nutrition_for_servings(df_food: pd.DataFrame, dish_name: str, servings: float) -> Optional[dict]:
+    """
+    Calculate nutrition for given dish_name using df_food.
+    Assumes dataset columns like:
+      'Dish Name', 'Calories (kcal)', 'Protein (g)', 'Carbohydrates (g)', 'Fats (g)'
+    servings: multiplier (1 == 1 serving, assume dataset per-serve=100g)
+    Returns dict or None if not found.
+    """
+    if df_food is None or df_food.empty:
+        return None
+    dish_name = str(dish_name).strip()
+    if not dish_name:
+        return None
+    # exact (case-insensitive)
+    matches = df_food[df_food['Dish Name'].str.lower() == dish_name.lower()]
+    if matches.empty:
+        # fuzzy fallback
         match = process.extractOne(dish_name, df_food['Dish Name'].astype(str).tolist(), score_cutoff=50)
         if not match:
             return None
         dish_name = match[0]
-        dish_row = df_food[df_food['Dish Name'] == dish_name]
-    row = dish_row.iloc[0]
-    # assume columns exist as 'Calories (kcal)', 'Protein (g)', 'Carbohydrates (g)', 'Fats (g)'
-    calories = float(row.get('Calories (kcal)', 0)) * servings
-    protein = float(row.get('Protein (g)', 0)) * servings
-    carbs = float(row.get('Carbohydrates (g)', 0)) * servings
-    fats = float(row.get('Fats (g)', 0)) * servings
-    return {"dish": dish_name, "servings": servings, "calories": round(calories,2),
-            "protein_g": round(protein,2), "carbs_g": round(carbs,2), "fat_g": round(fats,2)}
+        matches = df_food[df_food['Dish Name'] == dish_name]
+        if matches.empty:
+            return None
+    row = matches.iloc[0]
+    def _val(col):
+        try:
+            return float(row.get(col, 0) or 0)
+        except Exception:
+            return 0.0
+    calories = _val('Calories (kcal)') * servings
+    protein = _val('Protein (g)') * servings
+    carbs = _val('Carbohydrates (g)') * servings
+    fats = _val('Fats (g)') * servings
+    return {
+        "dish": dish_name,
+        "servings": servings,
+        "calories": round(calories, 2),
+        "protein_g": round(protein, 2),
+        "carbs_g": round(carbs, 2),
+        "fat_g": round(fats, 2)
+    }
