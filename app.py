@@ -3,9 +3,16 @@ import streamlit as st
 from datetime import datetime
 import pandas as pd
 import os
-import json
 import matplotlib.pyplot as plt
-from ai_utils import safe_load_json, safe_save_json, azure_keyphrases, azure_vision_analyze_image, find_closest_foods_from_tags, calculate_nutrition_for_servings
+
+from ai_utils import (
+    safe_load_json,
+    safe_save_json,
+    azure_keyphrases,
+    azure_vision_analyze_image,
+    find_closest_foods_from_tags,
+    calculate_nutrition_for_servings,
+)
 
 st.set_page_config(page_title="Health & Nutrition Tracker", layout="wide")
 
@@ -21,12 +28,11 @@ def load_food_dataset(path):
     if not os.path.exists(path):
         st.error("Dataset not found: " + path)
         return pd.DataFrame()
-    df = pd.read_csv(path)
-    return df
+    return pd.read_csv(path)
 
 df_food = load_food_dataset(DATASET_PATH)
 
-# safe JSON load/save wrappers
+# load jsons
 users = safe_load_json(USERS_PATH)
 profiles = safe_load_json(PROFILES_PATH)
 
@@ -43,13 +49,12 @@ def save_profiles():
 def append_log(entry: dict):
     cols = ['username','date','steps','calories','protein_g','fat_g','carbs_g','notes']
     if not os.path.exists(LOG_CSV):
-        df = pd.DataFrame(columns=cols)
-        df.to_csv(LOG_CSV, index=False)
+        pd.DataFrame(columns=cols).to_csv(LOG_CSV, index=False)
     df = pd.read_csv(LOG_CSV)
     df = pd.concat([df, pd.DataFrame([entry])], ignore_index=True)
     df.to_csv(LOG_CSV, index=False)
 
-# auth
+# session
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user = None
@@ -57,6 +62,9 @@ if "logged_in" not in st.session_state:
 st.sidebar.title("Account")
 menu = st.sidebar.selectbox("Menu", ["Login","Signup","Dashboard","AI Insights","Profile"])
 
+# -------------------------
+# AUTH: Signup
+# -------------------------
 if menu == "Signup":
     st.header("Create Account")
     new_user = st.text_input("Username")
@@ -73,6 +81,9 @@ if menu == "Signup":
             save_users(); save_profiles()
             st.success("Account created. Please login.")
 
+# -------------------------
+# AUTH: Login
+# -------------------------
 elif menu == "Login":
     st.header("Login")
     u = st.text_input("Username", key="login_user")
@@ -85,6 +96,9 @@ elif menu == "Login":
         else:
             st.error("Incorrect credentials")
 
+# -------------------------
+# PROFILE
+# -------------------------
 elif menu == "Profile":
     if not st.session_state.logged_in:
         st.info("Please login first.")
@@ -104,6 +118,9 @@ elif menu == "Profile":
             save_profiles()
             st.success("Profile saved.")
 
+# -------------------------
+# DASHBOARD
+# -------------------------
 elif menu == "Dashboard":
     if not st.session_state.logged_in:
         st.info("Please login first.")
@@ -126,7 +143,6 @@ elif menu == "Dashboard":
             workout = st.selectbox("Workout type", ["None","Yoga","Walk","Run","Gym"])
             intensity = st.selectbox("Intensity", ["Low","Medium","High"])
             if st.button("Compute & Save"):
-                # calculate nutrition
                 total_cal = 0.0; total_prot=0.0; total_fat=0.0; total_carbs=0.0
                 entries = [(b1,s1),(b2,s2),(b3,s3)]
                 for dish, sv in entries:
@@ -157,7 +173,6 @@ elif menu == "Dashboard":
                 last = df_user.tail(7)
                 st.subheader("Last entries")
                 st.dataframe(last[['date','steps','calories','protein_g','fat_g','carbs_g']].reset_index(drop=True))
-                # plot steps and calories
                 fig, ax = plt.subplots(1,2, figsize=(10,3))
                 last.plot(x='date', y='steps', ax=ax[0], marker='o', title='Steps (last entries)')
                 last.plot(x='date', y='calories', ax=ax[1], marker='o', title='Calories (last entries)')
@@ -165,58 +180,52 @@ elif menu == "Dashboard":
             else:
                 st.info("No logs yet. Add today's entry!")
 
+# -------------------------
+# AI INSIGHTS (Daily)
+# -------------------------
 elif menu == "AI Insights":
     if not st.session_state.logged_in:
         st.info("Please login first.")
     else:
         u = st.session_state.user
         st.title("AI Insights")
-        # Weekly report
-        st.subheader("Weekly AI-generated Report")
-        if st.button("Generate Weekly Report"):
-            from ai_utils import generate_weekly_stats  # we'll patch this quickly below if not exists
-            try:
-                stats, text = generate_weekly_stats(u, LOG_CSV)
-            except Exception:
-                # fallback simple summarizer
-                import pandas as pd
-                if not os.path.exists(LOG_CSV):
-                    st.info("No logs yet.")
-                else:
-                    df = pd.read_csv(LOG_CSV, parse_dates=['date'])
-                    df_user = df[df['username']==u]
-                    if df_user.empty:
-                        st.info("No logs yet.")
-                    else:
-                        today = pd.to_datetime(datetime.now().date())
-                        week_start = today - pd.Timedelta(days=6)
-                        df_week = df_user[(df_user['date'] >= week_start.strftime("%Y-%m-%d"))]
-                        total_steps = int(df_week['steps'].sum())
-                        avg_steps = int(df_week['steps'].mean())
-                        total_cal = float(df_week['calories'].sum())
-                        avg_cal = float(df_week['calories'].mean())
-                        text = f"Weekly summary: total steps {total_steps}, avg steps {avg_steps}, total calories {round(total_cal,1)}, avg cal {round(avg_cal,1)}"
-                        st.write(text)
+        st.write("This page uses Azure AI services for food detection, meal analysis, and generating daily reports.")
+
+        # DAILY AI REPORT
+        st.subheader("📅 Daily AI-Generated Report")
+        if st.button("Generate Daily Report"):
+            stats, msg = generate_daily_stats(u, LOG_CSV)
+            if not stats:
+                st.info(msg)
             else:
-                st.write(text)
+                st.success("Daily Report:")
+                st.write(f"### 📊 Stats for {stats['date']}")
+                st.write(f"- **Calories:** {stats['calories']} kcal")
+                st.write(f"- **Steps:** {stats['steps']}")
+                st.write(f("- **Protein:** {stats['protein']} g"))
+                st.write(f("- **Carbs:** {stats['carbs']} g"))
+                st.write(f"- **Fats:** {stats['fats']} g")
 
-        # Diet suggestions
-        st.subheader("Diet Suggestions")
-        if st.button("Get Diet Suggestions"):
-            # load profile
-            prof = profiles.get(u, {})
-            try:
-                from ai_utils import diet_suggestions_from_profile
-                stats, _ = generate_weekly_stats(u, LOG_CSV)
-                sugg = diet_suggestions_from_profile(prof, stats)
-            except Exception:
-                sugg = ["No suggestion available (no logs/profile)."]
-            for s in sugg:
-                st.write("• " + s)
+        st.markdown("---")
 
-        # Photo analyzer
-        st.subheader("Food Photo Analyzer")
-        uploaded = st.file_uploader("Upload a food photo", type=["jpg","jpeg","png"])
+        # DAILY DIET SUGGESTIONS
+        st.subheader("🥗 AI Daily Diet & Fitness Suggestions")
+        if st.button("Get Daily Suggestions"):
+            profile = profiles.get(u, {})
+            stats, msg = generate_daily_stats(u, LOG_CSV)
+            if not stats:
+                st.info(msg)
+            else:
+                sug = daily_suggestions(profile, stats)
+                st.write("### 🔸 Personalized Daily Advice:")
+                for s in sug:
+                    st.write("• " + s)
+
+        st.markdown("---")
+
+        # FOOD PHOTO ANALYZER (Azure Vision)
+        st.subheader("📷 Food Photo Analyzer (Azure Vision)")
+        uploaded = st.file_uploader("Upload a food image", type=["jpg","jpeg","png"])
         if uploaded is not None:
             img_bytes = uploaded.read()
             vision_endpoint = st.secrets.get("AZURE_VISION_ENDPOINT", "")
@@ -254,84 +263,56 @@ elif menu == "AI Insights":
                         append_log(entry)
                         st.success("Added to your log.")
 
-# small helper functions integrated from ai_utils (if not present)
-# add generate_weekly_stats and diet_suggestions_from_profile here for completeness
-def generate_weekly_stats(username: str, log_csv_path: str):
+# -------------------------
+# Helper functions (daily)
+# -------------------------
+def generate_daily_stats(username: str, log_csv_path: str):
     if not os.path.exists(log_csv_path):
         return None, "No logs found."
-    df = pd.read_csv(log_csv_path, parse_dates=['date'])
-    if 'username' not in df.columns:
-        return None, "Log file structure invalid."
-    df_user = df[df['username']==username].copy()
-    if df_user.empty:
-        return None, "No log data available yet."
-    today = pd.to_datetime(datetime.now().date())
-    week_start = today - pd.Timedelta(days=6)
-    df_user['date'] = pd.to_datetime(df_user['date'])
-    df_week = df_user[(df_user['date'] >= week_start) & (df_user['date'] <= today)]
-    if df_week.empty:
-        return None, "No entries in the last 7 days."
-    total_steps = int(df_week['steps'].sum())
-    avg_steps = int(df_week['steps'].mean())
-    total_cal = float(df_week['calories'].sum())
-    avg_cal = float(df_week['calories'].mean())
-    protein = df_week['protein_g'].sum() if 'protein_g' in df_week.columns else None
-    fats = df_week['fat_g'].sum() if 'fat_g' in df_week.columns else None
-    carbs = df_week['carbs_g'].sum() if 'carbs_g' in df_week.columns else None
+    df = pd.read_csv(log_csv_path)
+    if 'username' not in df.columns or 'date' not in df.columns:
+        return None, "Log file format incorrect."
+    today = datetime.now().strftime("%Y-%m-%d")
+    df_user_today = df[(df['username'] == username) & (df['date'] == today)]
+    if df_user_today.empty:
+        return None, "No entries logged today."
+    total_steps = int(df_user_today['steps'].sum())
+    total_calories = float(df_user_today['calories'].sum())
+    protein = float(df_user_today['protein_g'].sum()) if 'protein_g' in df_user_today.columns else 0.0
+    fats = float(df_user_today['fat_g'].sum()) if 'fat_g' in df_user_today.columns else 0.0
+    carbs = float(df_user_today['carbs_g'].sum()) if 'carbs_g' in df_user_today.columns else 0.0
     stats = {
-        "total_steps": total_steps,
-        "avg_daily_steps": avg_steps,
-        "total_calories": round(total_cal,1),
-        "avg_daily_calories": round(avg_cal,1),
-        "protein_g": round(protein,1) if protein is not None else None,
-        "fat_g": round(fats,1) if fats is not None else None,
-        "carbs_g": round(carbs,1) if carbs is not None else None,
-        "days_with_entries": int(df_week.shape[0])
+        "date": today,
+        "steps": total_steps,
+        "calories": round(total_calories,2),
+        "protein": round(protein,2),
+        "fats": round(fats,2),
+        "carbs": round(carbs,2)
     }
-    summary = (
-        f"Weekly Report ({week_start.date()} — {today.date()}):\n"
-        f"- Logged on {stats['days_with_entries']} out of 7 days.\n"
-        f"- Total steps: {stats['total_steps']} (avg {stats['avg_daily_steps']} /day).\n"
-        f"- Total calories: {stats['total_calories']} kcal (avg {stats['avg_daily_calories']} kcal/day).\n"
-    )
-    if stats['protein_g'] is not None:
-        summary += f"- Macronutrients (week total): Protein {stats['protein_g']} g, Fat {stats['fat_g']} g, Carbs {stats['carbs_g']} g.\n"
-    suggestions = []
-    if stats['avg_daily_steps'] < 7000:
-        suggestions.append("Average steps are low — add short walks.")
-    else:
-        suggestions.append("Great job on steps this week!")
-    if stats['avg_daily_calories'] > 2200:
-        suggestions.append("Calories high — consider portion control and more veggies.")
-    elif stats['avg_daily_calories'] < 1400:
-        suggestions.append("Calories low — ensure adequate nutrition.")
-    else:
-        suggestions.append("Calorie intake looks reasonable.")
-    return stats, summary + "\nRecommendations:\n- " + "\n- ".join(suggestions)
+    return stats, "Daily stats generated"
 
-def diet_suggestions_from_profile(profile: dict, recent_stats: dict):
+def daily_suggestions(profile: dict, stats: dict):
     suggestions = []
-    if not profile:
-        return ["No profile found to generate suggestions."]
-    # protein guidance
-    protein_weekly = recent_stats.get('protein_g') if recent_stats else None
-    if protein_weekly:
-        avg_protein = protein_weekly / 7
-        if avg_protein < 50:
-            suggestions.append("Increase high-protein vegetarian foods: paneer, lentils, soya, yogurt, nuts.")
-        else:
-            suggestions.append("Protein intake is adequate; maintain variety.")
-    # calorie guidance
-    avg_cal = recent_stats.get('avg_daily_calories') if recent_stats else None
-    cal_goal = profile.get('calorie_goal')
-    if avg_cal and cal_goal:
-        if avg_cal > cal_goal:
-            suggestions.append(f"Weekly average calories {avg_cal} exceed your goal {cal_goal} — reduce portions or avoid fried foods.")
-        elif avg_cal < cal_goal - 300:
-            suggestions.append("Calorie intake below goal — add nutritious snacks (nuts, milk, paneer).")
-        else:
-            suggestions.append("Calories aligned with your goal — good consistency!")
-    # generic
-    if profile.get('diet') == 'vegetarian':
-        suggestions.append("Prefer dals, paneer, legumes, and whole grains for balanced nutrition.")
+    if not stats:
+        return ["No data logged today. Add your meals and steps first."]
+    goal_steps = profile.get("steps_goal", 8000)
+    if stats['steps'] < goal_steps:
+        suggestions.append(f"Your steps today ({stats['steps']}) are below your goal ({goal_steps}). Try a short walk or a quick home workout.")
+    else:
+        suggestions.append("Great job! You reached your step goal today.")
+    goal_cal = profile.get("calorie_goal", 2000)
+    if stats['calories'] > goal_cal + 200:
+        suggestions.append("Calorie intake today is higher than your goal. Consider lighter meals for dinner and reduce snacks.")
+    elif stats['calories'] < goal_cal - 200:
+        suggestions.append("Calorie intake is lower than your goal. Add a nutritious snack like nuts, milk, or fruit.")
+    else:
+        suggestions.append("Your calorie intake today is within a healthy range.")
+    if stats['protein'] < 40:
+        suggestions.append("Protein intake is low today. Add paneer, dal, sprouts, yogurt, or nuts.")
+    else:
+        suggestions.append("Protein intake looks good today.")
+    if stats['carbs'] > 300:
+        suggestions.append("High-carb day — balance with veggies and fiber.")
+    if stats['fats'] > 80:
+        suggestions.append("High fat intake — avoid fried foods for the next meal.")
     return suggestions
