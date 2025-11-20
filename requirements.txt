@@ -1,8 +1,6 @@
 streamlit
 pandas
 matplotlib
-fuzzywuzzy
-python-Levenshtein
 requests
-pillow
-python-dotenv
+fuzzywuzzy
+python-Levenshtein  
