@@ -1,10 +1,6 @@
 # ai_utils.py
-import os
-import json
-import requests
-from typing import List, Dict, Tuple, Optional
-from io import BytesIO
-from PIL import Image
+import os, json, requests
+from typing import List, Tuple, Dict, Optional
 import pandas as pd
 from fuzzywuzzy import process
 
@@ -28,39 +24,49 @@ def safe_save_json(path: str, data: dict):
         json.dump(data, f, indent=2)
 
 # -------------------------
-# Azure Language (Key Phrases)
+# Azure Language: KeyPhrases & Sentiment
 # -------------------------
 def azure_keyphrases(text: str, endpoint: str, key: str) -> List[str]:
-    """
-    Return list of key phrases extracted by Azure Text Analytics.
-    If API fails, returns empty list.
-    """
     if not text or not endpoint or not key:
         return []
     url = endpoint.rstrip("/") + "/text/analytics/v3.0/keyPhrases"
     headers = {"Ocp-Apim-Subscription-Key": key, "Content-Type": "application/json"}
-    body = {"documents": [{"id": "1", "language": "en", "text": text}]}
+    body = {"documents": [{"id":"1", "language":"en", "text": text}]}
     try:
         r = requests.post(url, headers=headers, json=body, timeout=10)
         r.raise_for_status()
-        data = r.json()
-        return data.get("documents", [{}])[0].get("keyPhrases", [])
+        j = r.json()
+        return j.get("documents", [{}])[0].get("keyPhrases", [])
     except Exception:
         return []
 
+def azure_sentiment_analysis(text: str, endpoint: str, key: str) -> Dict:
+    """
+    Returns dict: {'sentiment':'positive'/'neutral'/'negative', 'confidenceScores': {...}}
+    """
+    if not text or not endpoint or not key:
+        return {}
+    url = endpoint.rstrip("/") + "/text/analytics/v3.0/sentiment"
+    headers = {"Ocp-Apim-Subscription-Key": key, "Content-Type": "application/json"}
+    body = {"documents": [{"id":"1","language":"en","text": text}]}
+    try:
+        r = requests.post(url, headers=headers, json=body, timeout=10)
+        r.raise_for_status()
+        j = r.json()
+        doc = j.get("documents", [{}])[0]
+        return {"sentiment": doc.get("sentiment"), "confidenceScores": doc.get("confidenceScores", {})}
+    except Exception:
+        return {}
+
 # -------------------------
-# Azure Computer Vision analyze
+# Azure Vision analyze (tags & description)
 # -------------------------
 def azure_vision_analyze_image(image_bytes: bytes, endpoint: str, key: str) -> Dict:
-    """
-    Send binary image bytes to Azure Computer Vision analyze endpoint.
-    Returns JSON response (tags, description, objects) or {'error':...}.
-    """
     if not image_bytes or not endpoint or not key:
-        return {"error": "Missing image bytes or Azure credentials."}
+        return {"error": "Missing image or keys."}
     url = endpoint.rstrip("/") + "/vision/v3.2/analyze"
-    params = {"visualFeatures": "Tags,Description,Objects", "language": "en"}
-    headers = {"Ocp-Apim-Subscription-Key": key, "Content-Type": "application/octet-stream"}
+    params = {"visualFeatures":"Tags,Description,Objects","language":"en"}
+    headers = {"Ocp-Apim-Subscription-Key": key, "Content-Type":"application/octet-stream"}
     try:
         r = requests.post(url, headers=headers, params=params, data=image_bytes, timeout=30)
         r.raise_for_status()
@@ -71,11 +77,7 @@ def azure_vision_analyze_image(image_bytes: bytes, endpoint: str, key: str) -> D
 # -------------------------
 # Fuzzy matching helpers
 # -------------------------
-def find_closest_foods_from_tags(tags: List[str], df_food: pd.DataFrame, top_n: int = 5, score_cutoff: int = 60) -> List[Tuple[str,int]]:
-    """
-    Given list of tags, fuzzy-match them to 'Dish Name' column in df_food.
-    Returns list of (dish_name, score), sorted by score desc.
-    """
+def find_closest_foods_from_tags(tags: List[str], df_food: pd.DataFrame, top_n: int = 6, score_cutoff: int = 55) -> List[Tuple[str,int]]:
     if df_food is None or df_food.empty or not tags:
         return []
     dish_list = df_food['Dish Name'].astype(str).tolist()
@@ -94,19 +96,12 @@ def find_closest_foods_from_tags(tags: List[str], df_food: pd.DataFrame, top_n: 
 # Nutrition calculation
 # -------------------------
 def calculate_nutrition_for_servings(df_food: pd.DataFrame, dish_name: str, servings: float) -> Optional[dict]:
-    """
-    Calculate nutrition for given dish_name using df_food.
-    Assumes dataset columns like:
-      'Dish Name', 'Calories (kcal)', 'Protein (g)', 'Carbohydrates (g)', 'Fats (g)'
-    servings: multiplier (1 == 1 serving, assume dataset per-serve=100g)
-    Returns dict or None if not found.
-    """
     if df_food is None or df_food.empty:
         return None
     dish_name = str(dish_name).strip()
     if not dish_name:
         return None
-    # exact (case-insensitive)
+    # exact case-insensitive match
     matches = df_food[df_food['Dish Name'].str.lower() == dish_name.lower()]
     if matches.empty:
         # fuzzy fallback
@@ -123,6 +118,7 @@ def calculate_nutrition_for_servings(df_food: pd.DataFrame, dish_name: str, serv
             return float(row.get(col, 0) or 0)
         except Exception:
             return 0.0
+    # assume dataset nutrition values are per serving (100g) — user uses servings accordingly
     calories = _val('Calories (kcal)') * servings
     protein = _val('Protein (g)') * servings
     carbs = _val('Carbohydrates (g)') * servings
