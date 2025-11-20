@@ -23,4 +23,4 @@ It integrates Azure Cognitive Services for Vision, Sentiment Analysis, Key Phras
 	•	Azure Vision API
 	•	Azure Translator (via Cognitive Services)
 
-
+Video link: https://drive.google.com/file/d/1hpUgCeIyHA9xYHMHPkAJYAuhk6ocWugL/view?usp=sharing
